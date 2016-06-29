@@ -21,7 +21,11 @@ Npm.depends({
   "electron-installer-debian": "0.3.0",
   "async": "2.0.0-rc.6",
   "fs-extra": "0.30.0",
-  "bizzby-lsb-release": "0.2.0"
+  "bizzby-lsb-release": "0.2.0",
+  "wget-improved": "1.3.0",
+  "range-parser": "1.2.0",
+  "sprintf-js": "1.0.3",
+  "stream-stream": "1.2.6"
 });
 
 Package.onUse(function (api) {
@@ -32,12 +36,14 @@ Package.onUse(function (api) {
   api.use("meteorhacks:picker@1.0.0", "server", {weak: true});
 
   api.addFiles([
+    'server/variables.js',
     'server/createBinaries.js',
     'server/downloadUrls.js',
     'server/launchApp.js',
     'server/serve.js',
     'server/serveDownloadUrl.js',
     'server/serveUpdateFeed.js',
+    'server/serveMultipart.js',
     // Must go last so that its dependencies have been defined.
     'server/index.js'
   ], 'server');

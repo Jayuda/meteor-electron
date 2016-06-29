@@ -1,6 +1,6 @@
 var electronPackager = Meteor.wrapAsync(Npm.require("electron-packager"));
 var electronRebuild = Npm.require('electron-rebuild');
-var fs = Npm.require('fs');
+var fs = Npm.require('fs-extra');
 var mkdirp = Meteor.wrapAsync(Npm.require('mkdirp'));
 var path = Npm.require('path');
 var proc = Npm.require('child_process');
@@ -13,6 +13,7 @@ var rimraf = Meteor.wrapAsync(Npm.require('rimraf'));
 var ncp = Meteor.wrapAsync(Npm.require('ncp'));
 var url = Npm.require('url');
 const async = Npm.require('async');
+const wget = Npm.require('wget-improved');
 
 var exec = Meteor.wrapAsync(function(command, options, callback){
   proc.exec(command, options, function(err, stdout, stderr){
@@ -29,8 +30,8 @@ var exists = function(path) {
   }
 };
 
-var projectRoot = function(){
-  if (process.platform === "win32"){
+var projectRoot = function() {
+  if (IS_WINDOWS) {
     return process.env.METEOR_SHELL_DIR.split(".meteor")[0];
   } else {
     return process.env.PWD;
@@ -42,10 +43,6 @@ var ELECTRON_VERSION = '0.36.7';
 // Make a deep clone of Meteor.settings.electron to keep that unmodified
 var electronSettings = JSON.parse(JSON.stringify(Meteor.settings.electron)) || {};
 
-var IS_MAC = (process.platform === 'darwin');
-var IS_WIN = (process.platform === 'win32');
-var IS_LINUX = (process.platform === 'linux');
-
 /* Entry Point */
 createBinaries = function() {
   var results = {};
@@ -56,7 +53,7 @@ createBinaries = function() {
     //just build for the current platform/architecture
     if (IS_MAC || IS_LINUX) {
       builds = [{platform: process.platform, arch: process.arch}];
-    } else if (IS_WIN) {
+    } else if (IS_WINDOWS) {
       //arch detection doesn't always work on windows, and ia32 works everywhere
       builds = [{platform: process.platform, arch: "ia32"}];
     } else {
@@ -133,10 +130,8 @@ createBinaries = function() {
       }
     }
 
-    if (buildInfo.platform === 'linux') {
-      // TODO: Replace with automation-stack/electron-sudo when merged the pull request
-      // https://github.com/automation-stack/electron-sudo/pull/14
-      packageJSON.dependencies['electron-sudo'] = 'cgalvarez/electron-sudo';
+    if (buildInfo.platform === Platform.LINUX) {
+      packageJSON.dependencies['electron-sudo'] = '^3.0.7';
       packageJSON.dependencies['request'] = '^2.72.0';
     }
 
@@ -173,7 +168,7 @@ createBinaries = function() {
     var signingIdentityRequiredAndMissing = false;
     if (canServeUpdates(buildInfo.platform)) {
       // Enable the auto-updater if possible.
-      if ((buildInfo.platform === 'darwin') && !signingIdentity) {
+      if ((buildInfo.platform === Platform.MAC) && !signingIdentity) {
         // If the app isn't signed and we try to use the auto-updater, it will
         // throw an exception. Log an error if the settings have changed, below.
         signingIdentityRequiredAndMissing = true;
@@ -182,7 +177,7 @@ createBinaries = function() {
       }
     }
 
-    if (buildInfo.platform === 'linux') {
+    if (buildInfo.platform === Platform.LINUX) {
       // Bundle the app icon(s) inside app/resources and set relative paths for BrowserWindow
       var iconFiles = {};
       if (electronSettings.icon && electronSettings.icon.linux) {
@@ -193,16 +188,15 @@ createBinaries = function() {
         }
       }
       if (!_.isEmpty(iconFiles)) {
-        const fse = Npm.require('fs-extra');
         const appResDir = path.resolve(buildDirs.app, './resources');
         const projRoot = projectRoot(); // cache value
-        fse.mkdirpSync(appResDir);
+        fs.mkdirpSync(appResDir);
         _.each(iconFiles, function(filepath, resolution, list) {
           try {
             var from = path.resolve(projRoot, filepath);
             var to = path.resolve(projRoot, path.join(appResDir, path.basename(filepath)));
             settings.icon.linux[resolution] = path.relative(buildDirs.app, to);
-            fse.copySync(from, to);
+            fs.copySync(from, to);
           } catch (err) {
             console.error(err);
           }
@@ -244,7 +238,7 @@ createBinaries = function() {
 
     /* Package the build for download if specified. */
     // TODO(rissem): make this platform independent
-    if (electronSettings.autoPackage && (buildInfo.platform === 'linux')) {
+    if (electronSettings.autoPackage && (buildInfo.platform === Platform.LINUX)) {
       if (IS_LINUX) {
         var setup = {
           build: build,
@@ -262,7 +256,7 @@ createBinaries = function() {
       }
     }
 
-    if (electronSettings.autoPackage && (buildInfo.platform === 'darwin')) {
+    if (electronSettings.autoPackage && (buildInfo.platform === Platform.MAC)) {
       // The auto-updater framework only supports installing ZIP releases:
       // https://github.com/Squirrel/Squirrel.Mac#update-json-format
       var downloadName = (appName || "app") + ".zip";
@@ -344,7 +338,7 @@ function getPackagerSettings(buildInfo, dirs){
   }
   // electron-packager does not require this setting when building for linux
   // See https://github.com/electron-userland/electron-packager/blob/master/docs/api.md#icon
-  if (electronSettings.icon && buildInfo.platform !== 'linux') {
+  if (electronSettings.icon && buildInfo.platform !== Platform.LINUX) {
     var icon = electronSettings.icon[buildInfo.platform];
     if (icon) {
       packagerSettings.icon = path.resolve(projectRoot(), icon);
@@ -445,14 +439,24 @@ function iconHasChanged(iconPath, workingDir) {
 }
 
 function appPath(appName, platform, arch, buildDir) {
-  var appExtension = (platform === 'darwin') ? '.app' : '.exe';
+  var appExtension = '';
+  if (platform === Platform.MAC) {
+    appExtension = '.app';
+  } else if (platform === Platform.WINDOWS) {
+    appExtension = '.exe';
+  }
   return path.join(buildDir, [appName, platform, arch].join('-'), appName + appExtension);
 }
 
 function buildInstallersFromLinux(setup) {
   const lsbRelease = Npm.require('bizzby-lsb-release');
   const distro = lsbRelease().distributorID.toLowerCase();
-  var deps = {'deb': [], 'rpm': []};
+  // These are the packages that can be built separately;
+  // the others (like AppImage) are built from one of these
+  const baseFormats = [LinuxFormat.DEB, LinuxFormat.RPM];
+  setup.info.formats = setup.info.formats || _.values(LinuxFormat);
+  var deps = {};
+  _.each(_.values(LinuxFormat), function(format) { deps[format] = []; });
 
   // Get the required packages based upon current os family distributor ID
   // (rely on the command lsb_release through the npm package bizzby-lsb-release)
@@ -468,18 +472,25 @@ function buildInstallersFromLinux(setup) {
     case 'redhatenterpriseserver':
     case 'scientific':
     case 'suse linux': // enterprise server
+      // TODO: check dependencies for building installers in redhat-based distros
+      setup[LinuxFormat.APPIMAGE] = LinuxFormat.RPM;
       break;
     // deb based distros
     case 'ubuntu':
     case 'debian':
-      deps.deb = ['dpkg', 'fakeroot'];
-      deps.rpm = ['rpm'];
+      deps[LinuxFormat.DEB] = ['dpkg', 'fakeroot'];
+      deps[LinuxFormat.RPM] = ['rpm'];
+      deps[LinuxFormat.APPIMAGE] = ['curl', 'zsync'];
+      setup[LinuxFormat.APPIMAGE] = LinuxFormat.DEB;
       break;
   }
 
+  // Build only requested installers
+  deps = _.pick.apply(this, _.union([deps], setup.info.formats));
+
   Object.keys(deps).forEach(function(format) {
-    if (deps[format].length) {
-      buildWizard(_.extend({}, setup), format, deps[format]);
+    if (_.contains(baseFormats, format)) {
+      buildWizard(_.extend({}, setup), format, deps);
     }
   });
 }
@@ -490,41 +501,151 @@ function buildWizard(setup, format, deps) {
     path.join(setup.build, '/'), setup.formatBuild);
 
   switch (format) {
-    case 'deb':
+    case LinuxFormat.DEB:
       installer = Npm.require('electron-installer-debian');
       break;
-    case 'rpm':
+    case LinuxFormat.RPM:
       installer = Npm.require('electron-installer-redhat');
       break;
   }
 
   async.series([
-    async.apply(exec, 'which ' + deps.join(' '), {}),
-    async.apply(rimraf, setup.formatBuild, {}),
-    async.apply(mkdirp, setup.formatBuild),
+    async.apply(checkDeps, deps[format]),
+    async.apply(Meteor.wrapAsync(fs.emptyDir), setup.formatBuild),
     async.apply(exec, cmdRsync, {}),
-    function(callback) { // save package format in electron settings
-      // The auto-updater needs to know the installer/wizard format. We cannot
-      // rely on directly changing the electron-packager build, because linux
-      // builders are async and electronSettings.json may be in use by another
-      // process, so use a different dir for building the installer itself.
-      var electronSettingsPath = path.resolve(setup.formatBuild, './resources/app/electronSettings.json');
-      var electronSettings = Npm.require(electronSettingsPath);
-      electronSettings.format = format;
-      writeFile(electronSettingsPath, JSON.stringify(electronSettings));
-      callback(null);
-    },
-    async.apply(installer, options)
-  ], function(err, result) {
+    async.apply(setElectronSettingsFormat, path.resolve(setup.formatBuild, './resources/app/electronSettings.json'), format),
+    async.apply(installer, options),
+  ], Meteor.bindEnvironment(function(err, result) {
     if (err) {
       if (err.code === 1 && result.length === 1) {
-        console.warn(util.format('Cannot build %s installer because of missing deps (%s)', format, deps.join(', ')));
+        console.warn(util.format('Cannot build %s installer because of missing deps (%s)', format, deps[format].join(', ')));
       } else {
         console.error(util.format('There was an error while building %s package:', format), err.message || err);
         console.error(err.stack);
       }
     } else {
       console.log(util.format('%s installer created at %s', format, options.dest));
+      // Build AppImage only if package has been created successfully for current distro
+      if (_.contains(setup.info.formats, LinuxFormat.APPIMAGE) && format === setup[LinuxFormat.APPIMAGE]) {
+        buildAppImage(setup, format, deps, options);
+      }
+    }
+  }));
+}
+
+// Manage the tools downloads
+function download(from, to, permissions, callback) {
+  permissions = permissions || 0755;
+  var tool = wget.download(from, to);
+  tool.on('error', Meteor.bindEnvironment(callback));
+  tool.on('end', Meteor.bindEnvironment(function() {
+    fs.chmod(to, permissions, Meteor.bindEnvironment(callback));
+  }));
+}
+
+/* The auto-updater needs to know the installer/wizard format. We cannot rely
+  on directly changing the electron-packager build, because linux builders are
+  async and electronSettings.json may be in use by another process, so use a
+  different dir for building the installer itself. */
+function setElectronSettingsFormat(path, format, callback) {
+  var settings = fs.readJsonSync(path);
+  settings.format = format;
+  fs.writeJson(path, settings, Meteor.bindEnvironment(callback));
+}
+
+// Check that deps (system packages) are installed (when required)
+function checkDeps(deps, callback) {
+  if (deps && deps.length) {
+    exec('which ' + deps.join(' '), {}, callback);
+  } else {
+    callback(null);
+  }
+}
+
+// Atom recipe: https://github.com/probonopd/AppImages/blob/master/recipes/atom/Recipe
+function buildAppImage(setup, srcFormat, deps, options) {
+  const format = LinuxFormat.APPIMAGE;
+  const formatBuild = setup.formatBuild.slice(0, - srcFormat.length) + format;
+  const appDir = path.resolve(formatBuild, options.name + '.AppDir');
+  const appDirBin = path.resolve(appDir, 'usr/bin');
+  var icon = _.isObject(Meteor.settings.electron.icon.linux)
+    ? _.chain(Meteor.settings.electron.icon.linux).values().last().value() // assume last icon has highest res
+    : Meteor.settings.electron.icon.linux;
+  icon = path.resolve(projectRoot(), icon);
+  const AppRun = path.join(appDir, 'AppRun');
+  const AppImageAssistant = path.join(formatBuild, 'AppImageAssistant');
+  const AppImageUpdate = path.join(appDirBin, 'appimageupdate');
+  const AppWrapper = path.join(appDirBin, options.name + '.wrapper');
+  const ZsyncCurl = path.join(appDirBin, 'zsync_curl');
+  const srcInstaller = getLinuxInstallerFinalFilename(options, srcFormat);
+  const appImage = getLinuxInstallerFinalFilename(options, format);
+  const finalExec = path.join(setup.dirs.final, appImage);
+  const updateUrl = DOWNLOAD_URLS.linux[LinuxFormat.APPIMAGE];
+
+  // Extract files from deb/rpm package
+  var cmdExtract;
+  if (srcFormat === LinuxFormat.DEB) {
+    cmdExtract = 'dpkg -x %s .';
+  } else if (srcFormat === LinuxFormat.RPM) {
+    cmdExtract = 'rpm2cpio %s | cpio -idm';
+  }
+  cmdExtract = util.format(cmdExtract, path.join(setup.dirs.final, srcInstaller));
+
+  // Create desktop file contents
+  const desktopFile = _.template(
+    "[Desktop Entry]\n" +
+    "Encoding=UTF-8\n" +
+    "Type=Application\n" +
+    "Terminal=false\n" +
+    "Exec=<%= name %>.wrapper\n" +
+    "Name=<%= productName %>\n" +
+    "Comment=<%= description %>\n" +
+    "Icon=<%= name %>\n" +
+    "<% if (typeof(categories) !== 'undefined') { %>Categories=<%= categories %><% } %>" +
+    "<% if (typeof(mimeType) !== 'undefined') { %>MimeType=<%= mimeType %><% } %>"
+  );
+  const desktopFileContents = desktopFile({
+    categories: options.categories ? options.categories.join(';') : undefined,
+    description: options.description,
+    genericName: options.genericName,
+    mimeType: options.mimeType, // only deb
+    name: options.name,
+    productName: options.productName
+  });
+  process.env.PATH = process.env.PATH + path.delimiter + appDirBin;
+
+  async.series([
+    async.apply(checkDeps, deps[format]),
+    async.apply(Meteor.wrapAsync(fs.emptyDir), setup.formatBuild), // clean
+    async.apply(Meteor.wrapAsync(fs.remove), finalExec + '*'), // remove final executable and related .zsync
+    async.apply(Meteor.wrapAsync(fs.ensureDir), appDirBin), // ensure structure
+    async.apply(exec, cmdExtract, {cwd: appDir}),
+    // move icon into place so that AppImageAssistant finds them
+    async.apply(Meteor.wrapAsync(fs.copy), icon, path.join(appDir, options.name + path.extname(icon))),
+    // create desktop file
+    async.apply(writeFile, path.join(appDir, options.name + '.desktop'), desktopFileContents),
+    // update format inside electronSettings.json
+    async.apply(setElectronSettingsFormat, path.join(appDir, 'usr/share', options.name, 'resources/app/electronSettings.json'), format),
+    // download AppImage tools and set proper permissions
+    async.apply(download, 'https://github.com/probonopd/AppImageKit/releases/download/5/AppRun', AppRun, 0755),
+    async.apply(download, 'https://github.com/probonopd/AppImageKit/releases/download/5/AppImageAssistant', AppImageAssistant, 0755),
+    async.apply(download, 'https://raw.githubusercontent.com/probonopd/AppImageKit/master/desktopintegration', AppWrapper, 0755),
+    async.apply(download, 'https://raw.githubusercontent.com/probonopd/AppImageKit/master/AppImageUpdate.AppDir/usr/bin/appimageupdate', AppImageUpdate, 0755),
+    async.apply(download, 'https://github.com/probonopd/zsync-curl/releases/download/_binaries/zsync_curl', ZsyncCurl, 0755),
+    async.apply(exec, util.format('%s %s %s', AppImageAssistant, appDir, finalExec), {}),
+    // config the self-update feature
+    async.apply(exec, util.format('appimageupdate %s set "zsync|%s.zsync"', appImage, updateUrl), {cwd: setup.dirs.final}), // embed the update URL
+    async.apply(exec, util.format('zsyncmake %s', appImage), {cwd: setup.dirs.final}),
+  ], function(err, result) {
+    if (err) {
+      if (err.code === 1 && result.length === 1) {
+        console.warn(util.format('Cannot build %s installer because of missing deps (%s)', format, deps[format].join(', ')));
+      } else {
+        console.error(util.format('There was an error while building %s package:', format), err.message || err);
+        console.error(err.stack);
+      }
+    } else {
+      console.log(util.format('%s standalone executable created at %s', format, setup.dirs.final));
     }
   });
 }
@@ -544,38 +665,37 @@ function getBuilderOptions(format, setup) {
     'src',
     'version'
   ];
-  const allowed = {
-    'deb': [
-      'arch',
-      'bin',
-      'categories',
-      'depends',
-      'enhances', // undocummented
-      'genericName',
-      'lintianOverrides',
-      'maintainer',
-      'mimeType',
-      'name',
-      'preDepends', // undocummented
-      'priority',
-      'recommends', // undocummented
-      'revision',
-      'section',
-      'size',
-      'suggests' // undocummented
-    ],
-    'rpm': [
-      'arch',
-      'bin',
-      'categories',
-      'genericName',
-      'group',
-      'license',
-      'name',
-      'requires',
-      'revision',
-    ]
-  };
+  const allowed = {};
+  allowed[LinuxFormat.DEB] = [
+    'arch',
+    'bin',
+    'categories',
+    'depends',
+    'enhances', // undocummented
+    'genericName',
+    'lintianOverrides',
+    'maintainer',
+    'mimeType',
+    'name',
+    'preDepends', // undocummented
+    'priority',
+    'recommends', // undocummented
+    'revision',
+    'section',
+    'size',
+    'suggests' // undocummented
+  ];
+  allowed[LinuxFormat.RPM] = [
+    'arch',
+    'bin',
+    'categories',
+    'genericName',
+    'group',
+    'license',
+    'name',
+    'requires',
+    'revision',
+  ];
 
   var sanitizedName = setup.name.toLowerCase().replace(/\s/g, '-');
   if (!setup.build) {
@@ -620,8 +740,33 @@ function getBuilderOptions(format, setup) {
         filepath = path.join(dest, installer);
       }
       return filepath;
+      return path.join(dest, getInstallerFilename(platform, format));
     };
+  }
+  // Set by default categories, used by AppImage for .desktop file
+  if (!options.categories) {
+    options.categories = ['GNOME', 'GTK', 'Utility'];
   }
 
   return _.pick.apply(this, _.union([_.defaults({}, setup.options, options)], _.union(common, allowed[format])));
+}
+
+function getLinuxInstallerFilename(options, format) {
+  var filename, pattern;
+  if (DOWNLOAD_URLS.linux[format]) {
+    filename = path.join(dest, path.basename(DOWNLOAD_URLS.linux[format]));
+  } else if (format === LinuxFormat.DEB) {
+    pattern = '%s_%s_%s.deb';
+  } else if (format === LinuxFormat.RPM) {
+    pattern = '%s-%s.%s.rpm';
+  } else if (format === 'AppImage') {
+    pattern = '%s-%s-%s.AppImage';
+  }
+  return pattern ? util.format(pattern, options.name, options.version, options.arch) : filename;
+}
+
+function getLinuxInstallerFinalFilename(options, format) {
+  return DOWNLOAD_URLS.linux[format]
+    ? path.basename(DOWNLOAD_URLS.linux[format])
+    : getLinuxInstallerFilename(options, format);
 }

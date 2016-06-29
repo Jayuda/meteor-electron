@@ -5,7 +5,10 @@ var dialog = require('electron').dialog;
 const request = require('request');
 const util = require('util');
 const fs = require('original-fs');
+const myfs = require('fs');
 const sudo = require('electron-sudo');
+const path = require('path');
+const exec = require('child_process').exec;
 
 // Daily.
 var SCHEDULED_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
@@ -175,37 +178,56 @@ _.extend(Updater.prototype, {
 
   _checkForLinuxUpdates: function(callback) {
     var self = this;
-    var options = {
-      uri: this.config.feedUrl,
-      qs: _.pick(this.config, 'format', 'platform', 'version')
-    };
-    _.defaults(options, this.config.requestOptions, this._requestDefaults);
+    if (self.config.format === 'AppImage') {
+      this._updateAppImage();
+    } else {
+      var options = {
+        uri: this.config.feedUrl,
+        qs: _.pick(this.config, 'format', 'platform', 'version')
+      };
+      _.defaults(options, this.config.requestOptions, this._requestDefaults);
 
-    request(options, function(error, response, body) {
-      if (response.statusCode === 400) { // bad request (missing params)
-        autoUpdater.emit(self.Event.ERROR);
-        return false;
-      }
-      if (error) { // error
-        return self.emitError('Checking updates',
-          'There was an error while checking for new updates', error);
-      }
+      request(options, function(error, response, body) {
+        if (response.statusCode === 400) { // bad request (missing params)
+          autoUpdater.emit(self.Event.ERROR);
+          return false;
+        }
+        if (error) { // error
+          return self.emitError('Checking updates',
+            'There was an error while checking for new updates', error);
+        }
 
-      // Handle the response
-      if (response.statusCode === 204) {
-        autoUpdater.emit(self.Event.UPDATE_NOT_AVAILABLE);
-        return false;
-      } else if (response.statusCode === 200 && body) {
-        try {
-          body = JSON.parse(body);
-        } catch(error) {
-          return self.emitError('Checking updates', 'Malformed response', body);
+        // Handle the response
+        if (response.statusCode === 204) {
+          autoUpdater.emit(self.Event.UPDATE_NOT_AVAILABLE);
+          return false;
+        } else if (response.statusCode === 200 && body) {
+          try {
+            body = JSON.parse(body);
+          } catch(error) {
+            return self.emitError('Checking updates', 'Malformed response', body);
+          }
+          if (typeof body === 'object' && body.url) {
+            self._downloadLinuxUpdate(body.url);
+          } else {
+            return self.emitError('Checking updates', 'Bad response', JSON.stringify(body, {indent: true}));
+          }
         }
-        if (typeof body === 'object' && body.url) {
-          self._downloadLinuxUpdate(body.url);
-        } else {
-          return self.emitError('Checking updates', 'Bad response', body.toString());
-        }
+      });
+    }
+  },
+
+  _updateAppImage: function() {
+    var self = this;
+    const binDir = path.join(process.cwd(), 'bin');
+    process.env.PATH = process.env.PATH + ':' + binDir;
+    exec('appimageupdate ' + process.env.APPIMAGE, {}, function(error, stdout, stderr) {
+      if (error) {
+        return self.emitError('Updating', 'Failed to download', error);
+      } else {
+        const bytesFetched = parseInt(_.last(/used [0-9]+ local, fetched ([0-9]+)/.exec(stdout)))
+        fs.chmodSync(process.env.APPIMAGE, 0755);
+        autoUpdater.emit((bytesFetched > 0) ? self.Event.UPDATE_DOWNLOADED : self.Event.UPDATE_NOT_AVAILABLE);
       }
     });
   },

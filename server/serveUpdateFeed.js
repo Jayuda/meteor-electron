@@ -15,19 +15,19 @@ UPDATE_FEED_PATH = "/app/latest";
 
 serveUpdateFeed = function() {
   // https://github.com/Squirrel/Squirrel.Mac#server-support
-  if (canServeUpdates('darwin') || canServeUpdates('linux')) {
+  if (canServeUpdates(Platform.MAC) || canServeUpdates(Platform.LINUX)) {
     serve(UPDATE_FEED_PATH, function(req, res, next) {
       var appVersion = req.query.version;
       var appPlatform = req.query.platform;
       var appFormat = req.query.format;
-      if (!appPlatform || (appPlatform === 'linux' && (!appFormat || !DOWNLOAD_URLS[appPlatform][appFormat]))) {
+      if (!appPlatform || (appPlatform === Platform.LINUX && (!appFormat || !DOWNLOAD_URLS[appPlatform][appFormat]))) {
         res.statusCode = 400; // Bad request (missing parameters).
         res.end();
       } else if (semver.valid(appVersion) && semver.gte(appVersion, latestVersion)) {
         res.statusCode = 204; // No content.
         res.end();
       } else {
-        var url = (appPlatform === 'linux')
+        var url = (appPlatform === Platform.LINUX)
           ? DOWNLOAD_URLS[appPlatform][appFormat] : DOWNLOAD_URLS[appPlatform];
         res.statusCode = 200;
         res.setHeader('Content-Type', 'application/json');
@@ -40,9 +40,9 @@ serveUpdateFeed = function() {
   // (Summary 'cause those docs are scant: the Windows app is going to expect the update feed URL
   // to represent a directory from within which it can fetch the RELEASES file and packages. The
   // above `serve` call serves _just_ '/app/latest', whereas this serves its contents.)
-  if (canServeUpdates("win32")) {
+  if (canServeUpdates(Platform.WINDOWS)) {
     // `path.dirname` works even on Windows.
-    var releasesUrl = DOWNLOAD_URLS['win32'].releases;
+    var releasesUrl = DOWNLOAD_URLS[Platform.WINDOWS].releases;
     serveDir(UPDATE_FEED_PATH, function(req, res, next){
       //first strip off the UPDATE_FEED_PATH
       var path = req.url.split(UPDATE_FEED_PATH)[1];

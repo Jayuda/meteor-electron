@@ -10,3 +10,4 @@ if ((process.env.NODE_ENV === 'development') && (electronSettings.autoBuild !== 
 
 serveDownloadUrl();
 serveUpdateFeed();
+serveMultipart();

@@ -75,7 +75,7 @@ app.on("window-all-closed", function(){
   if (process.platform !== "darwin"){
     app.quit();
   }
-})
+});
 
 if (handleStartupEvent()) {
   return;
@@ -87,7 +87,7 @@ var createDefaultMenu = require('./menu.js');
 var proxyWindowEvents = require('./proxyWindowEvents');
 
 require('electron-debug')({
-    showDevTools: false
+  showDevTools: false
 });
 
 var electronSettings = JSON.parse(fs.readFileSync(
@@ -108,7 +108,6 @@ if (electronSettings.updateFeedUrl) {
       productName: packageJSON.productName
     });
   }
-  autoUpdater.checkForUpdates();
   checkForUpdates = function() {
     autoUpdater.checkForUpdates(true /* userTriggered */);
   };
@@ -169,7 +168,10 @@ if (electronSettings.frame === false){
 // Linux icon: See https://github.com/electron-userland/electron-packager/issues/90
 var baseIcon;
 if (process.platform === 'linux' && electronSettings.icon && electronSettings.icon[process.platform]) {
-  baseIcon = path.resolve(__dirname, _.values(electronSettings.icon[process.platform])[0]);
+  const icon = _.isObject(electronSettings.icon[process.platform])
+    ? _.values(electronSettings.icon[process.platform])[0]
+    : electronSettings.icon[process.platform];
+  baseIcon = path.resolve(__dirname, icon);
   windowOptions.icon = baseIcon;
 }
 
@@ -215,6 +217,10 @@ app.on("ready", function(){
       }
     ]);
     tray.setContextMenu(trayContextMenu);
+  }
+
+  if (electronSettings.updateFeedUrl) {
+    autoUpdater.checkForUpdates();
   }
 });
 

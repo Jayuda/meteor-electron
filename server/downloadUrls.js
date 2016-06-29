@@ -60,7 +60,11 @@ parseLinuxDownloadUrls = function(electronSettings) {
   if (!electronSettings || !electronSettings.downloadUrls || !electronSettings.downloadUrls[platform]) return;
 
   return parseUrlVariables(electronSettings, platform,
-    electronSettings.downloadUrls[platform].formats || ['deb', 'rpm']);
+    electronSettings.downloadUrls[platform].formats || [
+      LinuxFormat.DEB,
+      LinuxFormat.RPM,
+      LinuxFormat.APPIMAGE
+    ]);
 };
 
 function cachebustedUrl(url) {
@@ -79,7 +83,7 @@ function parseUrlVariables(settings, platform, formats) {
     ext: 'zip',
     name: settings.name.toLowerCase().replace(/\s/g, '-') || 'electron',
     platform: platform,
-    rootUrl: settings.rootUrl || process.env.ROOT_URL.slice(0, -1),
+    rootUrl: ROOT_URL,
     version: settings.version
   };
 
