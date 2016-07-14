@@ -5,7 +5,6 @@ var dialog = require('electron').dialog;
 const request = require('request');
 const util = require('util');
 const fs = require('original-fs');
-const myfs = require('fs');
 const sudo = require('electron-sudo');
 const path = require('path');
 const exec = require('child_process').exec;
@@ -13,7 +12,24 @@ const exec = require('child_process').exec;
 // Daily.
 var SCHEDULED_CHECK_INTERVAL = 24 * 60 * 60 * 1000;
 
+/**
+ * Initializes `meson:electron` auto-updater and binds its methods to the
+ * Electron autoUpdater events.
+ *
+ * @constructor
+ * @summary Initializes `meson:electron` auto-updater.
+ */
 var Updater = function() {
+  /**
+   * Enum for the possible events emitted by Electorn autoUpdater.
+   *
+   * @enum
+   * @public
+   * @readonly
+   * @see {@link http://electron.atom.io/docs/api/auto-updater/#events|Electron autoUpdater Events API docs}
+   * @since 0.1.4
+   * @version 1.0.0
+   */
   this.Event = {
     CHECKING_FOR_UPDATE: 'checking-for-update',
     ERROR: 'error', // when there is an error while updating
@@ -27,6 +43,14 @@ var Updater = function() {
   autoUpdater.on(this.Event.UPDATE_DOWNLOADED, this._onUpdateDownloaded.bind(this));
 
   if (process.platform === 'linux') {
+    /**
+     * Config JSON for Linux updates.
+     *
+     * @public
+     * @since 0.1.4
+     * @type {Object}
+     * @version 1.0.0
+     */
     this.config = {
       feedUrl: null,
       format: null,
@@ -37,19 +61,40 @@ var Updater = function() {
       tmpUpdate: null,
       version: null,
     };
+
+    /**
+     * Defaults for HTTP requests.
+     *
+     * @private
+     * @readonly
+     * @since 0.1.4
+     * @type {Object}
+     * @version 1.0.0
+     */
     this._requestDefaults = {
       method: 'GET',
       timeout: 5000,
       followRedirect: false,
       maxRedirects: 0
     };
+
+    /**
+     * Mime types for supported Linux formats. AppImages are managed with its
+     * own embedded autoupdater, so it's not included here.
+     *
+     * @private
+     * @readonly
+     * @since 0.1.4
+     * @type {Object}
+     * @version 1.0.0
+     */
     this._mimeTypes = {
       'deb': [
-        'application/x-debian-package', // http://www.freeformatter.com/mime-types-list.html
-        'application/vnd.debian.binary-package', // https://simple.wikipedia.org/wiki/Deb_(file_format)
+        'application/x-debian-package',
+        'application/vnd.debian.binary-package',
       ],
       'rpm': [
-        'application/x-rpm', // https://kc.mcafee.com/corporate/index?page=content&id=KB57128
+        'application/x-rpm',
         'application/octet-stream',
       ]
     };
@@ -57,6 +102,13 @@ var Updater = function() {
 };
 
 _.extend(Updater.prototype, {
+  /**
+   * Configures the Linux autoUpdater.
+   *
+   * @param {Object} settings - The configuration for the Linux autoUpdater.
+   * @since 0.1.4
+   * @version 1.0.0
+   */
   setup: function(settings) {
     _.extend(this.config, settings);
     if (!this.config.tmpUpdate) {
@@ -125,6 +177,11 @@ _.extend(Updater.prototype, {
     this._askToApplyUpdate();
   },
 
+  /**
+   * Asks the user whether to apply the download update or not.
+   *
+   * @emits app#before-quit
+   */
   _askToApplyUpdate: function() {
     var self = this;
 
@@ -134,13 +191,6 @@ _.extend(Updater.prototype, {
       buttons: ['Ask me later', 'Quit and install']
     }, function(result) {
       if (result > 0) {
-        // Relaunch the app after installing updates. Only available since electron v1.2.2. See:
-        // - https://github.com/electron/electron/pull/5837
-        // - http://electron.atom.io/releases/#httpsgithubcomelectronelectronreleasestagv122-june-08-2016
-        if (app.relaunch) {
-          app.relaunch();
-        }
-
         // Emit the 'before-quit' event since the app won't quit otherwise
         // (https://app.asana.com/0/19141607276671/74169390751974) and the app won't:
         // https://github.com/atom/electron/issues/3837
@@ -157,7 +207,14 @@ _.extend(Updater.prototype, {
         app.emit('before-quit', event);
         if (event.isDefaultPrevented()) return;
 
-        autoUpdater.quitAndInstall();
+        // Relaunch the app after installing updates. Only available since electron v1.2.2. See:
+        // - https://github.com/electron/electron/pull/5837
+        // - http://electron.atom.io/releases/#httpsgithubcomelectronelectronreleasestagv122-june-08-2016
+        if (app.relaunch) {
+          app.relaunch();
+        } else {
+          autoUpdater.quitAndInstall();
+        }
       } else {
         self._scheduleCheck();
       }
@@ -176,7 +233,19 @@ _.extend(Updater.prototype, {
     this._scheduledCheck = setTimeout(this.checkForUpdates.bind(this), SCHEDULED_CHECK_INTERVAL);
   },
 
-  _checkForLinuxUpdates: function(callback) {
+  /**
+   * Checks for Linux updates. Electron autoUpdater does not support
+   * {@link http://electron.atom.io/docs/api/auto-updater/#linux|Linux} natively,
+   * so we leverage its events and implements this feature manually.
+   *
+   * @emits autoUpdater#error
+   * @emits autoUpdater#update-not-available
+   * @private
+   * @since 0.1.4
+   * @summary Checks for Linux updates of formats {deb|rpm|AppImage}.
+   * @version 1.0.0
+   */
+  _checkForLinuxUpdates: function() {
     var self = this;
     if (self.config.format === 'AppImage') {
       this._updateAppImage();
@@ -210,28 +279,49 @@ _.extend(Updater.prototype, {
           if (typeof body === 'object' && body.url) {
             self._downloadLinuxUpdate(body.url);
           } else {
-            return self.emitError('Checking updates', 'Bad response', JSON.stringify(body, {indent: true}));
+            return self.emitError('Checking updates', 'Bad response',
+              JSON.stringify(body, {indent: true}));
           }
         }
       });
     }
   },
 
+  /**
+   * Checks and updates (if any available) an AppImage executable. The AppImage
+   * update relies on the embedded `appimageupdate` script and the `zsync_curl`
+   * binary.
+   *
+   * @emits autoUpdater#update-downloaded
+   * @emits autoUpdater#update-not-available
+   * @private
+   * @since 0.1.4
+   * @summary Checks (and updates if available) for updates of an AppImage app.
+   * @version 1.0.0
+   */
   _updateAppImage: function() {
     var self = this;
     const binDir = path.join(process.cwd(), 'bin');
-    process.env.PATH = process.env.PATH + ':' + binDir;
+    process.env.PATH += ':' + binDir;
     exec('appimageupdate ' + process.env.APPIMAGE, {}, function(error, stdout, stderr) {
       if (error) {
         return self.emitError('Updating', 'Failed to download', error);
       } else {
         const bytesFetched = parseInt(_.last(/used [0-9]+ local, fetched ([0-9]+)/.exec(stdout)))
-        fs.chmodSync(process.env.APPIMAGE, 0755);
         autoUpdater.emit((bytesFetched > 0) ? self.Event.UPDATE_DOWNLOADED : self.Event.UPDATE_NOT_AVAILABLE);
       }
     });
   },
 
+  /**
+   * Downnloads an update for a Linux app into a temporary location and the applies it.
+   *
+   * @emits autoUpdater#error
+   * @param {string} url - The URL to download the installer/package.
+   * @private
+   * @since 0.1.4
+   * @version 1.0.0
+   */
   _downloadLinuxUpdate: function(url) {
     var self = this;
     var options = {
@@ -242,7 +332,6 @@ _.extend(Updater.prototype, {
 
     request(options, function(error, response, body) {
       if (error) {
-        autoUpdater.emit(self.Event.ERROR);
         return self.emitError('Updating', 'Could not download the update file', error);
       }
 
@@ -261,6 +350,17 @@ _.extend(Updater.prototype, {
     });
   },
 
+  /**
+   * Applies an update for a Linux app and removes the package/installer after
+   * applied. Prompt for user permissions to apply the update using the default
+   * system package manager (`dpkg` for debian-based distros; `rpm` for
+   * redhat-based distros).
+   *
+   * @emits autoUpdater#update-downloaded
+   * @private
+   * @since 0.1.4
+   * @version 1.0.0
+   */
   _applyLinuxUpdate: function() {
     var self = this, cmd = '';
     switch (this.config.format) {
@@ -284,6 +384,16 @@ _.extend(Updater.prototype, {
     });
   },
 
+  /**
+   * Opens an error box dialog and emits an error event.
+   *
+   * @emits autoUpdater#error
+   * @param {string} title - A short string for the dialog title.
+   * @param {string} msg - A short title of the error.
+   * @param {Error|string} error - The Error object or a descriptive string (error details).
+   * @return {boolean} false
+   * @version 1.0.0
+   */
   emitError: function(title, msg, error) {
     var details = '';
     if (error !== undefined && error.message) {

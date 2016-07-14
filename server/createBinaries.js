@@ -40,7 +40,7 @@ var projectRoot = function() {
 
 var ELECTRON_VERSION = '0.36.7';
 
-// Make a deep clone of Meteor.settings.electron to keep that unmodified
+// Make a deep clone of Meteor.settings.electron to keep it unmodified
 var electronSettings = JSON.parse(JSON.stringify(Meteor.settings.electron)) || {};
 
 /* Entry Point */
@@ -55,7 +55,7 @@ createBinaries = function() {
       builds = [{platform: process.platform, arch: process.arch}];
     } else if (IS_WINDOWS) {
       //arch detection doesn't always work on windows, and ia32 works everywhere
-      builds = [{platform: process.platform, arch: "ia32"}];
+      builds = [{platform: process.platform, arch: Arch.ia32}];
     } else {
       console.error('You must specify one or more builds in Meteor.settings.electron.');
       return results;
@@ -104,6 +104,11 @@ createBinaries = function() {
       productName: appName
     });
 
+    if (buildInfo.platform === Platform.LINUX) {
+      packageJSON.dependencies['electron-sudo'] = '^3.0.7';
+      packageJSON.dependencies['request'] = '^2.72.0';
+    }
+
     // Check if the package has changed before we possibly copy over the app source since that will
     // of course sync `package.json`.
     var packageHasChanged = packageJSONHasChanged(packageJSON, buildDirs.app);
@@ -128,11 +133,6 @@ createBinaries = function() {
         ncp(resolvedAppSrcDir, buildDirs.app);
         didOverwriteNodeModules = true;
       }
-    }
-
-    if (buildInfo.platform === Platform.LINUX) {
-      packageJSON.dependencies['electron-sudo'] = '^3.0.7';
-      packageJSON.dependencies['request'] = '^2.72.0';
     }
 
     /* Write out the application package.json */
@@ -231,26 +231,33 @@ createBinaries = function() {
 
     /* Create Build */
     var build;
-    if (buildRequired) {
+    if (buildRequired || (buildInfo.platform === Platform.LINUX
+        && appHasChanged(buildDirs.app, buildDirs.working, 'linuxAppChecksum.txt'))
+    ) {
       build = electronPackager(packagerSettings)[0];
       console.log("Build created for", buildInfo.platform, buildInfo.arch, "at", build);
     }
 
     /* Package the build for download if specified. */
     // TODO(rissem): make this platform independent
-    if (electronSettings.autoPackage && (buildInfo.platform === Platform.LINUX)) {
-      if (IS_LINUX) {
-        var setup = {
-          build: build,
-          dirs: buildDirs,
-          info: buildInfo,
-          name: appName,
-          options: (electronSettings.installer && electronSettings.installer.linux)
-            ? electronSettings.installer.linux : {},
-          // icon paths must be relative to project root or absolute, so use those provided by user
-          settings: _.defaults({icon: Meteor.settings.electron.icon}, settings)
-        };
-        buildInstallersFromLinux(setup);
+
+    if (IS_LINUX) {
+      if (buildInfo.platform === Platform.LINUX) {
+        // Linux wizards needs to bundle their icons inside the app folder. They can be
+        // placed outside of the app folder, so we cannot rely on the default app checksum.
+        if (appHasChanged(buildDirs.app, buildDirs.working, 'linuxAppChecksum.txt')) {
+          var setup = {
+            build: build,
+            dirs: buildDirs,
+            info: buildInfo,
+            name: appName,
+            options: (electronSettings.installer && electronSettings.installer.linux)
+              ? electronSettings.installer.linux : {},
+            // icon paths must be relative to project root or absolute, so use those provided by user
+            settings: _.defaults({icon: Meteor.settings.electron.icon}, settings)
+          };
+          buildFromLinux(setup);
+        }
       } else {
         console.error('At this moment only linux builds from linux are supported.');
       }
@@ -368,8 +375,9 @@ function settingsHaveChanged(settings, appDir) {
   return !existingElectronSettings || !_.isEqual(settings, existingElectronSettings);
 }
 
-function appHasChanged(appSrcDir, workingDir) {
-  var appChecksumPath = path.join(workingDir, 'appChecksum.txt');
+function appHasChanged(appSrcDir, workingDir, checksum) {
+  checksum = checksum || 'appChecksum.txt';
+  var appChecksumPath = path.join(workingDir, checksum);
   var existingAppChecksum;
   try {
     existingAppChecksum = readFile(appChecksumPath, 'utf8');
@@ -448,7 +456,16 @@ function appPath(appName, platform, arch, buildDir) {
   return path.join(buildDir, [appName, platform, arch].join('-'), appName + appExtension);
 }
 
-function buildInstallersFromLinux(setup) {
+/**
+ * Builds all the requested (or available for current distro if not specified)
+ * wizards (installer/package/executable) with the provided parameters from a
+ * Linux system.
+ *
+ * @param {Object} setup - Contains info about the target system and config options.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
+function buildFromLinux(setup) {
   const lsbRelease = Npm.require('bizzby-lsb-release');
   const distro = lsbRelease().distributorID.toLowerCase();
   // These are the packages that can be built separately;
@@ -495,6 +512,16 @@ function buildInstallersFromLinux(setup) {
   });
 }
 
+/**
+ * Builds the wizard (installer/package/executable) with the requested format
+ * and provided parameters.
+ *
+ * @param {Object} setup - Contains info about the target system and config options.
+ * @param {string} format - The format of the app wizard.
+ * @param {Object} deps - The dependencies for each requested format.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
 function buildWizard(setup, format, deps) {
   var installer, options = getBuilderOptions(format, setup);
   const cmdRsync = util.format('rsync -a --delete --force --filter="P node_modules" "%s" "%s"',
@@ -533,27 +560,62 @@ function buildWizard(setup, format, deps) {
   }));
 }
 
-// Manage the tools downloads
-function download(from, to, permissions, callback) {
-  permissions = permissions || 0755;
-  var tool = wget.download(from, to);
-  tool.on('error', Meteor.bindEnvironment(callback));
-  tool.on('end', Meteor.bindEnvironment(function() {
-    fs.chmod(to, permissions, Meteor.bindEnvironment(callback));
-  }));
-}
 
-/* The auto-updater needs to know the installer/wizard format. We cannot rely
-  on directly changing the electron-packager build, because linux builders are
-  async and electronSettings.json may be in use by another process, so use a
-  different dir for building the installer itself. */
+/**
+ * Callback compatible with Async API.
+ *
+ * @callback asyncCallback
+ * @param {?Object} err - The error object.
+ * @param {*} result - The result to pass to the next function.
+ */
+
+/**
+ * Saves the wizard format into the electron settings JSON.
+ * The auto-updater needs to know the installer/wizard format. We cannot rely
+ * on directly changing the electron-packager build, because linux builders are
+ * async and electronSettings.json may be in use by another process, so use a
+ * different dir for building the installer itself.
+ *
+ * @param {string} path - Electron settings JSON file path.
+ * @param {string} format - The format of the app installer.
+ * @param {asyncCallback} callback - A callback compatible with the Async API.
+ * @since 0.1.4
+ * @summary Saves the wizard format into the electron settings JSON.
+ * @version 1.0.0
+ */
 function setElectronSettingsFormat(path, format, callback) {
   var settings = fs.readJsonSync(path);
   settings.format = format;
   fs.writeJson(path, settings, Meteor.bindEnvironment(callback));
 }
 
-// Check that deps (system packages) are installed (when required)
+/**
+ * Downloads the requested file to the desired location with the provided permissions.
+ *
+ * @param {string} from - Source location (URL).
+ * @param {string} to - Target location (path).
+ * @param {string} permissions - Octal permissions to set with `chmod`.
+ * @param {asyncCallback} callback - A callback compatible with the Async API.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
+function download(from, to, permissions, callback) {
+  permissions = permissions || 0755;
+  var file = wget.download(from, to);
+  file.on('error', Meteor.bindEnvironment(callback));
+  file.on('end', Meteor.bindEnvironment(function() {
+    fs.chmod(to, permissions, Meteor.bindEnvironment(callback));
+  }));
+}
+
+/**
+ * Check that deps (system packages) are installed (when required).
+ *
+ * @param {Object} deps - The dependencies for each requested format.
+ * @param {asyncCallback} callback - A callback compatible with the Async API.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
 function checkDeps(deps, callback) {
   if (deps && deps.length) {
     exec('which ' + deps.join(' '), {}, callback);
@@ -562,7 +624,17 @@ function checkDeps(deps, callback) {
   }
 }
 
-// Atom recipe: https://github.com/probonopd/AppImages/blob/master/recipes/atom/Recipe
+/**
+ * Builds a standalone AppImage executable.
+ *
+ * @param {Object} setup - Contains info about the target system and config options.
+ * @param {string} srcFormat - The source installer format (deb, rpm) which the AppImage will be built from.
+ * @param {Object} deps - The dependencies for each requested format.
+ * @param {Object} options - The input options of the source format builder.
+ * @see {@link https://github.com/probonopd/AppImages/blob/master/recipes/atom/Recipe|AppImage recipe for Atom}
+ * @since 0.1.4
+ * @version 1.0.0
+ */
 function buildAppImage(setup, srcFormat, deps, options) {
   const format = LinuxFormat.APPIMAGE;
   const formatBuild = setup.formatBuild.slice(0, - srcFormat.length) + format;
@@ -613,6 +685,7 @@ function buildAppImage(setup, srcFormat, deps, options) {
     productName: options.productName
   });
   process.env.PATH = process.env.PATH + path.delimiter + appDirBin;
+  const permissions = 0755;
 
   async.series([
     async.apply(checkDeps, deps[format]),
@@ -627,11 +700,11 @@ function buildAppImage(setup, srcFormat, deps, options) {
     // update format inside electronSettings.json
     async.apply(setElectronSettingsFormat, path.join(appDir, 'usr/share', options.name, 'resources/app/electronSettings.json'), format),
     // download AppImage tools and set proper permissions
-    async.apply(download, 'https://github.com/probonopd/AppImageKit/releases/download/5/AppRun', AppRun, 0755),
-    async.apply(download, 'https://github.com/probonopd/AppImageKit/releases/download/5/AppImageAssistant', AppImageAssistant, 0755),
-    async.apply(download, 'https://raw.githubusercontent.com/probonopd/AppImageKit/master/desktopintegration', AppWrapper, 0755),
-    async.apply(download, 'https://raw.githubusercontent.com/probonopd/AppImageKit/master/AppImageUpdate.AppDir/usr/bin/appimageupdate', AppImageUpdate, 0755),
-    async.apply(download, 'https://github.com/probonopd/zsync-curl/releases/download/_binaries/zsync_curl', ZsyncCurl, 0755),
+    async.apply(download, 'https://github.com/probonopd/AppImageKit/releases/download/5/AppRun', AppRun, permissions),
+    async.apply(download, 'https://github.com/probonopd/AppImageKit/releases/download/5/AppImageAssistant', AppImageAssistant, permissions),
+    async.apply(download, 'https://raw.githubusercontent.com/probonopd/AppImageKit/master/desktopintegration', AppWrapper, permissions),
+    async.apply(download, 'https://raw.githubusercontent.com/probonopd/AppImageKit/master/AppImageUpdate.AppDir/usr/bin/appimageupdate', AppImageUpdate, permissions),
+    async.apply(download, 'https://github.com/probonopd/zsync-curl/releases/download/_binaries/zsync_curl', ZsyncCurl, permissions),
     async.apply(exec, util.format('%s %s %s', AppImageAssistant, appDir, finalExec), {}),
     // config the self-update feature
     async.apply(exec, util.format('appimageupdate %s set "zsync|%s.zsync"', appImage, updateUrl), {cwd: setup.dirs.final}), // embed the update URL
@@ -650,6 +723,15 @@ function buildAppImage(setup, srcFormat, deps, options) {
   });
 }
 
+/**
+ * Returns the automatically assigned name from Linux builder.
+ *
+ * @param {Object} setup - Contains info about the target system and config options.
+ * @param {string} format - The installer format (deb, rpm, AppImage).
+ * @returns {Object} The input options of the installer builder.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
 function getBuilderOptions(format, setup) {
   // Allowed parameters depending on installer format. See:
   //  - https://www.npmjs.com/package/electron-installer-debian
@@ -705,7 +787,7 @@ function getBuilderOptions(format, setup) {
   var options = {
     src: setup.formatBuild + '/',
     dest: setup.dirs.final + '/',
-    arch: (setup.info.arch === 'x64') ? 'amd64' : 'i386',
+    arch: (setup.info.arch === Arch.x64) ? 'amd64' : 'i386',
     bin: sanitizedName,
     productName: setup.name,
     name: sanitizedName
@@ -733,17 +815,13 @@ function getBuilderOptions(format, setup) {
     options.version = setup.settings.version;
   }
   if (DOWNLOAD_URLS[setup.info.platform]) { // rename depending on download urls
-    options.rename = function(dest, installer) {
-      if (DOWNLOAD_URLS[setup.info.platform][format]) {
-        filepath = path.join(dest, path.basename(DOWNLOAD_URLS[setup.info.platform][format]));
-      } else {
-        filepath = path.join(dest, installer);
-      }
-      return filepath;
-      return path.join(dest, getInstallerFilename(platform, format));
-    };
+    (function(options, format) {
+      options.rename = function(dest, installer) {
+        return path.join(dest, getLinuxInstallerFinalFilename(options, format) || installer);
+      };
+    })(options, format);
   }
-  // Set by default categories, used by AppImage for .desktop file
+  // Set default categories, used by AppImage for .desktop file
   if (!options.categories) {
     options.categories = ['GNOME', 'GTK', 'Utility'];
   }
@@ -751,6 +829,14 @@ function getBuilderOptions(format, setup) {
   return _.pick.apply(this, _.union([_.defaults({}, setup.options, options)], _.union(common, allowed[format])));
 }
 
+/**
+ * Returns the automatically assigned name from Linux builder.
+ *
+ * @param {string} format - The installer format (deb, rpm, AppImage).
+ * @return {string} The filename automatically set by the builder.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
 function getLinuxInstallerFilename(options, format) {
   var filename, pattern;
   if (DOWNLOAD_URLS.linux[format]) {
@@ -765,8 +851,19 @@ function getLinuxInstallerFilename(options, format) {
   return pattern ? util.format(pattern, options.name, options.version, options.arch) : filename;
 }
 
+/**
+ * Returns the final filename assigned to the installer taking into account the
+ * download URLs.
+ *
+ * @param {Object} format - The input options of the installer builder.
+ * @param {string} format - The installer format (deb, rpm, AppImage).
+ * @returns {string} The final computed filename for the installer.
+ * @since 0.1.4
+ * @version 1.0.0
+ */
 function getLinuxInstallerFinalFilename(options, format) {
-  return DOWNLOAD_URLS.linux[format]
-    ? path.basename(DOWNLOAD_URLS.linux[format])
-    : getLinuxInstallerFilename(options, format);
+  const _ = Npm.require('lodash');
+  var url = _.get(DOWNLOAD_URLS.linux, (options.arch === 'amd64' ? Arch.x64 : Arch.ia32) + '.' + format);
+  url = url || _.get(DOWNLOAD_URLS.linux, format);
+  return url ? path.basename(url) : getLinuxInstallerFilename(options, format);
 }

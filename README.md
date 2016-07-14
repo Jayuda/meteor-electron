@@ -34,10 +34,9 @@ Configuration is possible via `Meteor.settings.electron`. For example,
     "icon": {
       "darwin": "private/MyApp.icns",
       "linux": {
-        "48x48": "private/MyApp48.png",
-        "64x64": "private/MyApp64.png",
-        "128x128": "private/MyApp128.png",
-        "256x256": "private/MyApp256.png",
+        "64x64": "private/icons/icon.png",
+        "128x128": "private/icons/icon@2x.png",
+        "256x256": "private/icons/icon@4x.png"
       },
       "win32": "private/MyApp.ico"
     },
@@ -77,7 +76,7 @@ Configuration is possible via `Meteor.settings.electron`. For example,
 <dl>
   <dt>icon</dt>
   <dd>platform dependent icon paths relative to Meteor application root (not `appSrcDir`).</dd>
-  <dd>For Linux installers you can provide either a string with the path to the icon file or an object for multiple resultions as in the example (learn more <a href="https://www.npmjs.com/package/electron-installer-debian#optionsicon">here</a>). For linux icons you can even provide absolute paths, as they are resolved successfully.
+  <dd>For Linux installers you can provide either a string with the path to the icon file or an object for multiple resultions as in the example (learn more <a href="https://www.npmjs.com/package/electron-installer-debian#optionsicon">here</a>). For linux icons you can even provide absolute paths, as they are managed successfully.
   <dt>version</dt>
   <dd>must confirm to <a href="https://docs.npmjs.com/getting-started/semantic-versioning">semver</a>.</dd>
   <dt>rootUrl</dt>
@@ -101,12 +100,12 @@ Configuration is possible via `Meteor.settings.electron`. For example,
   with `version`.</dd>
   <dt>downloadUrls.linux</dt>
   <dd>Place the latest app at this location. The URL may contain some variables to be dynamically replaced:</dd>
-  <dd>- `{{ext}}`: defaults to `["deb", "rpm"]`.</dd>
-  <dd>- `{{name}}`: defaults to sanitized (lowercased and hyphenated) `Meteor.settings.electron.name`, or `electron` if none provided.</dd>
-  <dd>- `{{platform}}`: defaults to the platform under process (`linux` because of `Meteor.settings.downloadUrls.linux`.</dd>
+  <dd>- `{{ext}}`: defaults to `["deb", "rpm", "AppImage"]`.</dd>
+  <dd>- `{{name}}`: defaults to sanitized (lowercased, hyphenated and deburred) `Meteor.settings.electron.name`, or `electron` if none provided.</dd>
+  <dd>- `{{platform}}`: defaults to the target platform of the build.</dd>
   <dd>- `{{version}}`: defaults to `Meteor.settings.electron.version`.</dd>
   <dd>`Meteor.settings.rootUrl` or `ROOT_URL`, defaulting in that order, is automatically prepended to the download URL(s) if it does not start with `http://` or `https://`.</dd>
-  <dd>This value can be of two types: string or object. There can exist multiple different Linux systems (`deb` or `rpm` at this moment), so you can provide a generic URL pattern to build all the URLs (string) or you can provide an object with the format as key and the pattern as value. You can read more about this  <a href="#q-how-do-i-set-the-download-urls-for-linux">below</a>.</dd>
+  <dd>This value can be of two types: string or object. There can exist multiple different Linux formats (`deb`, `rpm` or `AppImage` at this moment), so you can provide a generic URL pattern to build all the URLs (string) or you can provide an object with the format as key and the pattern as value. You can read more about this  <a href="#q-how-do-i-set-the-download-urls-for-linux">below</a>.</dd>
   <dt>sign</dt>
   <dd>Must be set to enable auto-updates on Mac.</dd>
   <dt>appSrcDir</dt>
@@ -188,6 +187,7 @@ Due to the different formats available for Linux, the download URLs will require
 
 - `/app/download?platform=linux&format=deb` for the debian-based linux systems installer.
 - `/app/download?platform=linux&format=rpm` for the redhat-based linux systems installer.
+- `/app/download?platform=linux&format=AppImage` for the standalone distro-agnostic app executable.
 
 ## Building for Windows on Mac
 
@@ -254,8 +254,15 @@ You can provide a global pattern to automatically generate URLs for all the supp
     "name": "Wonderful Meteor App",
     "version": "0.2.9",
     "rootUrl": "https://myapp.com",
+    "builds": [
+      {
+        "platform": "linux",
+        "arch": "x64",
+        "formats": ["deb", "rpm", "AppImage"]
+      }
+    ],
     "downloadUrls": {
-      "linux": "/download/{{platform}}/{{version}}/{{name}}.{{ext}}",
+      "linux": "/download/{{version}}/{{platform}}/{{arch}}/{{name}}.{{ext}}",
     }
   }
 }
@@ -264,9 +271,12 @@ You can provide a global pattern to automatically generate URLs for all the supp
 which produces:
 
 ```html
-https://myapp.com/download/linux/0.2.9/wonderful-meteor-app.deb
-https://myapp.com/download/linux/0.2.9/wonderful-meteor-app.rpm
+https://myapp.com/download/0.2.9/linux/x64/wonderful-meteor-app.deb
+https://myapp.com/download/0.2.9/linux/x64/wonderful-meteor-app.rpm
+https://myapp.com/download/0.2.9/linux/x64/wonderful-meteor-app.AppImage
 ```
+
+If you do NOT provide the formats to be built in `Meteor.settings.electron.builds` for the Linux platform, then all the available and buildable formats will be built (all supported by your current distro which fulfill the required dependencies).
 
 The other way you can set the download URLs is through an object:
 

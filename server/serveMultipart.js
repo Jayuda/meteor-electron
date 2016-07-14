@@ -6,25 +6,18 @@ const sprintf = Npm.require('sprintf-js').sprintf;
 const ss = Npm.require('stream-stream');
 const Readable = Npm.require('stream').Readable;
 
-function sendResponse(response, status, headers, readable) {
-  headers = headers || null;
-  readable = readable || null;
-  if (headers) {
-    response.writeHead(status, headers);
-  } else {
-    response.statusCode = status;
-  }
-  if (readable) {
-    readable.on('open', function() {
-      readable.pipe(response);
-    });
-  } else {
-    response.end();
-  }
-  return null;
-}
-
-// See http://stackoverflow.com/questions/12755997/how-to-create-streams-from-string-in-node-js/22085851#22085851
+/***
+ * Creates a readable stream from a given text.
+ * Useful for inserting the body headers for the partial chunks when request is
+ * multipart/byteranges.
+ *
+ * @param {string} text - The text to be used as readable stream.
+ * @return {Object} The readabla stream.
+ * @see {@link http://stackoverflow.com/questions/12755997/how-to-create-streams-from-string-in-node-js/22085851#22085851|How to create streams from string in Node.js}
+ * @since 0.1.4
+ * @summary Creates a readable stream from a given text.
+ * @version 1.0.0
+ */
 function stringReader(text) {
   var s = new Readable();
   s._read = function noop() {};
@@ -35,13 +28,18 @@ function stringReader(text) {
 
 /**
  * Serves multipart/byteranges requests (RFC2616, RFC7233).
+ * Partially based on http://www.codeproject.com/Articles/813480/HTTP-Partial-Content-In-Node-js
+ * by Robert Vandenberg Huang, licensed under CPOL v1.2
  *
- * @see Content-Range: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.16
- * @see Range: https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.35.1
- * @see Multipart/byteranges: https://www.w3.org/Protocols/rfc2616/rfc2616-sec19.html#sec19.2
- * @see Range Requests (RFC7233): https://tools.ietf.org/html/rfc7233
- * @see Partially based on http://www.codeproject.com/Articles/813480/HTTP-Partial-Content-In-Node-js by Robert Vandenberg Huang, licensed under CPOL v1.2
- * @see Licensed under CPOL v1.2 (http://www.codeproject.com/info/cpol10.aspx)
+ * @global
+ * @see {@link https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.16|Content-Range (RFC2616)}
+ * @see {@link https://www.w3.org/Protocols/rfc2616/rfc2616-sec14.html#sec14.35.1|Range (RFC2616)}
+ * @see {@link https://www.w3.org/Protocols/rfc2616/rfc2616-sec19.html#sec19.2|Multipart/byteranges (RFC2616)}
+ * @see {@link https://tools.ietf.org/html/rfc7233|Range Requests (RFC7233)}
+ * @see {@link http://www.codeproject.com/info/cpol10.aspx|CPOL v1.2 license}
+ * @since 0.1.4
+ * @summary Serves multipart/byteranges requests.
+ * @version 1.0.0
  */
 serveMultipart = function() {
   // If serving partial/differential downloads of AppImage from Meteor...
@@ -57,7 +55,7 @@ serveMultipart = function() {
       }
 
       // Check requested file
-      const filepath = path.join(PARTIALS_ROOT_PATH, url.parse(req.url, true, true).pathname.split('/').join(path.sep));
+      const filepath = path.join(MULTIPART_ROOT_PATH, url.parse(req.url, true, true).pathname.split('/').join(path.sep));
       const filestat = fs.statSync(filepath);
       const fileext = path.extname(filepath).toLowerCase();
       const mimeType = MimeTypes[fileext] || 'application/octet-stream';
@@ -75,7 +73,6 @@ serveMultipart = function() {
       }
 
       var range = parseRange(filestat.size, req.headers.range);
-      console.log('***range:', range);
       if (_.isEmpty(range)) {
         return sendResponse(res, 204); // 204 'No Content'
       } else if (range === -2) { // malformed header string
@@ -86,7 +83,6 @@ serveMultipart = function() {
         // 'chunked' is the default value for partial content, but AppImage uses zsync,
         // which requires explicitly avoiding it (see http://zsync.moria.org.uk/server)
         const transferEncoding = fileext.substr(1) === LinuxFormat.APPIMAGE.toLowerCase() ? '' : 'chunked';
-        console.log('***file extension:', fileext, fileext.substr(1), LinuxFormat.APPIMAGE, fileext.substr(1) === LinuxFormat.APPIMAGE, transferEncoding);
         const commonHeaders = {
           'Accept-Ranges': 'bytes',
           'Cache-Control': 'no-cache',

@@ -19,13 +19,14 @@ Npm.depends({
   "electron-rebuild": "1.0.1",
   "electron-installer-redhat": "0.2.0",
   "electron-installer-debian": "0.3.0",
-  "async": "2.0.0-rc.6",
+  "async": "2.0.0",
   "fs-extra": "0.30.0",
   "bizzby-lsb-release": "0.2.0",
   "wget-improved": "1.3.0",
   "range-parser": "1.2.0",
   "sprintf-js": "1.0.3",
-  "stream-stream": "1.2.6"
+  "stream-stream": "1.2.6",
+  "lodash": "4.13.1"
 });
 
 Package.onUse(function (api) {
@@ -41,9 +42,9 @@ Package.onUse(function (api) {
     'server/downloadUrls.js',
     'server/launchApp.js',
     'server/serve.js',
+    'server/serveMultipart.js',
     'server/serveDownloadUrl.js',
     'server/serveUpdateFeed.js',
-    'server/serveMultipart.js',
     // Must go last so that its dependencies have been defined.
     'server/index.js'
   ], 'server');

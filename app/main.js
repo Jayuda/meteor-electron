@@ -1,7 +1,7 @@
 var app = require('electron').app; // Module to control application life.
 var childProcess = require("child_process");
-var path = require("path");
-var fs = require("fs");
+const path = require("path");
+const fs = require("fs");
 const util = require('util');
 const nativeImage = require('electron').nativeImage;
 const _ = require('underscore');
